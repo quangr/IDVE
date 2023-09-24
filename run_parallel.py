@@ -1,7 +1,6 @@
 import itertools
 import multiprocessing
 import shlex
-import torch
 from multiprocessing import Queue
 import argparse
 import random
@@ -10,12 +9,6 @@ import time
 
 parser = argparse.ArgumentParser(allow_abbrev=False)
 parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
-parser.add_argument(
-    "--gpu_num",
-    default=torch.cuda.device_count(),
-    type=int,
-    help="Number of GPUs to use",
-)
 parser.add_argument(
     "--filename",
     type=str,
@@ -47,8 +40,6 @@ def parse_user_defined_args(unknown_args):
 
 
 batch_size = args.batch_size
-gpu_num = args.gpu_num
-worker_count = gpu_num * batch_size
 available_gpus = [0, 1, 2, 3]
 # available_gpus=range(torch.cuda.device_count())
 gpu_num = len(available_gpus)

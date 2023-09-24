@@ -2,7 +2,6 @@ import jax.numpy as jnp
 import jax
 import numpy as np
 import gym as ogym
-import d4rl
 from flax.training import orbax_utils
 import orbax.checkpoint
 env_id="HalfCheetah-v4"
@@ -21,7 +20,7 @@ single_mask[8:] = 0
 def offline_dataset():
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     expert_indice = np.random.permutation(100000)[:50000]
-    data=checkpointer.restore("/home/guorui/jax-rl/tmp/buffer/BlockedHalfCheetah_backward/BlockedHalfCheetah_backward__new_sac_sample__1__1695446461/")
+    data=checkpointer.restore("tmp/buffer/BlockedHalfCheetah_backward/BlockedHalfCheetah_backward__new_sac_sample__1__1695446461/")
     dataset_extra={}
     dataset_extra["observations"]=data[0][:100000,0]
     dataset_extra["next_observations"]=data[1][:100000,0]
@@ -31,7 +30,7 @@ def offline_dataset():
     dataset_extra["timeouts"]=jnp.zeros_like(dataset_extra["terminals"])
     dataset_extra=jax.tree_map(lambda x:x[expert_indice],dataset_extra)
 
-    data=checkpointer.restore("/home/guorui/jax-rl/tmp/buffer/BlockedHalfCheetah_abs/BlockedHalfCheetah_abs__new_sac_sample__1__1695352002/")
+    data=checkpointer.restore("tmp/buffer/BlockedHalfCheetah_abs/BlockedHalfCheetah_abs__new_sac_sample__1__1695352002/")
     dataset={}
     dataset["observations"]=data[0][:100000,0]
     dataset["next_observations"]=data[1][:100000,0]
