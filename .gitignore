@@ -1,3 +1,4 @@
 *.pyc
 expert_data
 tmp
+wandb

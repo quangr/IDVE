@@ -46,73 +46,6 @@ class BatchData:
     dones: np.ndarray
 
 
-class Lagrange(flax.struct.PyTreeNode):
-    cost_limit: float = 0.0
-    lambda_lr: float = 0
-    lagrangian_upper_bound: float | None = 0
-    init_value: float = 0.0
-    state: TrainState = None
-
-    @classmethod
-    def create(cls, cost_limit, lambda_lr, lagrangian_upper_bound, init_value):
-        lagrangian_multiplier = max(init_value, 0.0)
-
-        trainstate = TrainState.create(
-            apply_fn=None,
-            params=lagrangian_multiplier,
-            tx=optax.adam(learning_rate=lambda_lr),
-        )
-
-        return cls(
-            cost_limit=cost_limit,
-            lambda_lr=lambda_lr,
-            lagrangian_upper_bound=lagrangian_upper_bound,
-            init_value=init_value,
-            state=trainstate,
-        )
-
-    @staticmethod
-    def compute_lambda_loss(lagrangian_multiplier, mean_ep_cost: float, cost_limit):
-        """Penalty loss for Lagrange multiplier.
-
-        .. note::
-            ``mean_ep_cost`` is obtained from ``self.logger.get_stats('EpCosts')[0]``, which is
-            already averaged across MPI processes.
-
-        Args:
-            mean_ep_cost (float): mean episode cost.
-
-        Returns:
-            Penalty loss for Lagrange multiplier.
-        """
-        return -lagrangian_multiplier * (mean_ep_cost - cost_limit)
-
-    def update_lagrange_multiplier(self, Jc: float):
-        r"""Update Lagrange multiplier (lambda).
-
-        We update the Lagrange multiplier by minimizing the penalty loss, which is defined as:
-
-        .. math::
-
-            \lambda ^{'} = \lambda + \eta \cdot (J_C - J_C^*)
-
-        where :math:`\lambda` is the Lagrange multiplier, :math:`\eta` is the learning rate,
-        :math:`J_C` is the mean episode cost, and :math:`J_C^*` is the cost limit.
-
-        Args:
-            Jc (float): mean episode cost.
-        """
-        compute_lambda_loss = partial(
-            self.compute_lambda_loss, cost_limit=self.cost_limit
-        )
-
-        loss_value, grads = jax.value_and_grad(compute_lambda_loss)(
-            self.state.params, Jc
-        )
-        state = self.state.apply_gradients(grads=grads)
-        return self.replace(state=state.replace(params=jnp.clip(state.params, 0)))
-
-
 def parse_args():
     # fmt: off
     parser = argparse.ArgumentParser()
@@ -136,13 +69,13 @@ def parse_args():
         help="number of environments for evaluation")
 
     # Algorithm specific arguments
-    parser.add_argument("--env-id", type=str, default="BlockedHalfCheetah",
+    parser.add_argument("--env-id", type=str, default="AntWithObstacle",
         help="the id of the environment to be used")
     parser.add_argument("--expert-data", type=str,
         help="the name of the expert data file")
     parser.add_argument("--update-period", type=int, default=500)
     parser.add_argument("--expert-size", type=int, default=5000)
-    parser.add_argument("--decay-cycle", type=float, default=10,
+    parser.add_argument("--decay-schedule", type=str, default="linear",
         help="the reward alpha parameter")
     parser.add_argument("--anti-cof", type=float, default=-jnp.inf,
         help="the reward alpha parameter")
@@ -279,7 +212,7 @@ def sample_action(
     actor: Actor,
     actor_state: TrainState,
     observations: jnp.ndarray,
-    key: jax.random.KeyArray,
+    key: jax.Array,
 ) -> jnp.array:
     key, subkey = jax.random.split(key, 2)
     mean, log_std = actor.apply(actor_state.params, observations)
@@ -293,7 +226,7 @@ def sample_action(
 def sample_action_and_log_prob(
     mean: jnp.ndarray,
     log_std: jnp.ndarray,
-    subkey: jax.random.KeyArray,
+    subkey: jax.Array,
 ):
     action_std = jnp.exp(log_std)
     gaussian_action = mean + action_std * jax.random.normal(
@@ -383,21 +316,10 @@ def soft_update(tau: float, qf_state: RLTrainState) -> RLTrainState:
 def l2_loss(x):
     return (x**2).mean()
 
-
-def plot_vf_state(vf_state, obs):
-    xs = obs[:, 7]
+def plot_vf_state(vf_state, obs,position):
+    xs = position
     y = vf.apply(vf_state.params, obs * single_mask)
     plt.scatter(xs, y, color="b", alpha=0.1)
-    bins = np.linspace(xs.min(), xs.max(), 10)
-    inds = np.digitize(xs, bins)
-
-    # Calculate mean for each section
-    means = [np.mean(y[inds == i]) for i in range(1, len(bins))]
-
-    # Plot graph
-    plt.plot(bins[1:], means, color="r", alpha=0.9)
-
-
 def plot_state_whole(vf_state, qf_state, obs, action):
     plots_num = obs.shape[-1]
     fig, axes = plt.subplots(nrows=3, ncols=(plots_num + 2) // 3, figsize=(30, 10))
@@ -466,7 +388,7 @@ def reward_train_step(agent_state):
         Policy_Batch: BatchData,
         reward_qf_state: RLTrainState,
         reward_vf_state: RLTrainState,
-        key: jax.random.KeyArray,
+        key: jax.Array,
     ):
         key, subkey = jax.random.split(key, 2)
         Batch = jax.tree_map(
@@ -499,7 +421,7 @@ def reward_train_step(agent_state):
         Policy_Batch: BatchData,
         reward_qf_state: RLTrainState,
         reward_vf_state: RLTrainState,
-        key: jax.random.KeyArray,
+        key: jax.Array,
     ):
         Batch = jax.tree_map(
             lambda x, y: jnp.concatenate([x, y]), Policy_Batch, Expert_Batch
@@ -514,8 +436,11 @@ def reward_train_step(agent_state):
         current_V = vf.apply(vf_state.params, Batch.observations * single_mask).reshape(
             -1
         )
-        next_V = vf.apply(vf_state.params, Batch.next_observations * single_mask).reshape(-1)
-        policy_length=len(Policy_Batch.observations)
+        next_V = (1 - Batch.dones) * vf.apply(
+            vf_state.params, Batch.next_observations * single_mask
+        ).reshape(-1)
+        policy_length = len(Policy_Batch.observations)
+
         def mse_loss(params):
             current_reward_V = vf.apply(params, Batch.observations).reshape(-1)
             if args.use_q:
@@ -532,11 +457,21 @@ def reward_train_step(agent_state):
                 )
 
             loss = (1 - lamb) * (current_reward_V).mean() + lamb * ((y).clip(0)).mean()
-            return loss, (current_reward_V[:policy_length].mean(),current_reward_V[policy_length:].mean(), current_reward_Q[:policy_length].mean(), current_reward_Q[policy_length:].mean())
+            return loss, (
+                current_reward_V[:policy_length].mean(),
+                current_reward_V[policy_length:].mean(),
+                current_reward_Q[:policy_length].mean(),
+                current_reward_Q[policy_length:].mean(),
+            )
 
         (
             rewad_vf_loss_value,
-            (policy_reward_vf_values,expert_reward_vf_values, policy_reward_qf_values,expert_reward_qf_values),
+            (
+                policy_reward_vf_values,
+                expert_reward_vf_values,
+                policy_reward_qf_values,
+                expert_reward_qf_values,
+            ),
         ), grads = jax.value_and_grad(mse_loss, has_aux=True)(reward_vf_state.params)
         reward_vf_state = reward_vf_state.apply_gradients(grads=grads)
         callback_log["reward_vf_loss_value"] = rewad_vf_loss_value
@@ -553,7 +488,7 @@ def reward_train_step(agent_state):
         Policy_Batch: BatchData,
         reward_qf_state: RLTrainState,
         reward_vf_state: RLTrainState,
-        key: jax.random.KeyArray,
+        key: jax.Array,
     ):
         Batch = jax.tree_map(
             lambda x, y: jnp.concatenate([x, y]), Policy_Batch, Expert_Batch
@@ -566,13 +501,14 @@ def reward_train_step(agent_state):
         ).reshape(-1)
 
         vf_pi = vf.apply(vf_state.params, Batch.observations * single_mask).reshape(-1)
-        next_vf_pi = vf.apply(
+        next_vf_pi = (1 - Batch.dones) * vf.apply(
             vf_state.params, Batch.next_observations * single_mask
         ).reshape(-1)
         qf_pi = qf.apply(qf_state.params, Batch.observations, Batch.actions).reshape(-1)
         # Take min among all critics
         min_qf_pi = jnp.min(qf_pi, axis=0).reshape(-1)
         key, subkey = jax.random.split(key, 2)
+
         def actor_loss(params):
             mean, log_std = actor.apply(params, Batch.observations)
             log_prob = action_log_prob(Batch.actions, mean, log_std)
@@ -700,7 +636,7 @@ def train_step(agent_state, anti_buffer_state):
         vf_state: RLTrainState,
         Policy_Batch: BatchData,
         Expert_Batch: BatchData,
-        key: jax.random.KeyArray,
+        key: jax.Array,
     ):
         key, subkey = jax.random.split(key, 2)
         Batch = jax.tree_map(
@@ -712,18 +648,20 @@ def train_step(agent_state, anti_buffer_state):
         ).clip(max=0)
 
         def mse_loss(params):
-            expert_V = vf.apply(params, Expert_Batch.observations * single_mask).reshape(-1)
+            expert_V = vf.apply(
+                params, Expert_Batch.observations * single_mask
+            ).reshape(-1)
             next_V = vf.apply(params, Batch.next_observations * single_mask).reshape(-1)
 
             discounted_rewards = (1 - Batch.dones) * args.gamma * next_V
             if args.mean_V_update:
-                loss = (
-                    (current_Q.reshape(-1) - discounted_rewards) ** 2
-                ).mean()
+                loss = ((current_Q.reshape(-1) - discounted_rewards) ** 2).mean()
             else:
                 loss = (
-                    (discounted_rewards - current_Q.reshape(-1)).clip(0)
-                ).mean() - next_V.clip(max=0).mean() * 0.01+ ((expert_V-0)**2).mean()
+                    ((discounted_rewards - current_Q.reshape(-1)).clip(0)).mean()
+                    - next_V.clip(max=0).mean() * 0.01
+                    + ((expert_V - 0) ** 2).mean()
+                )
             return loss, current_Q.mean()
 
         (vf_loss_value, qf_values), grads = jax.value_and_grad(mse_loss, has_aux=True)(
@@ -743,7 +681,7 @@ def train_step(agent_state, anti_buffer_state):
         Expert_Batch: BatchData,
         reward_qf_state: RLTrainState,
         reward_vf_state: RLTrainState,
-        key: jax.random.KeyArray,
+        key: jax.Array,
     ):
         Batch = jax.tree_map(
             lambda x, y: jnp.concatenate([x, y]), Policy_Batch, Expert_Batch
@@ -792,29 +730,38 @@ def train_step(agent_state, anti_buffer_state):
         def mse_loss(params):
             current_Q = qf.apply(params, Batch.observations, Batch.actions).reshape(-1)
             anti_Q = qf.apply(params, anti_observations, anti_actions).reshape(-1)
-            current_expert_Q = qf.apply(
+            current_expert_Q = (1 - Expert_Batch.dones) * qf.apply(
                 params, Expert_Batch.observations, Expert_Batch.actions
             ).reshape(-1)
-            
+
             w = (
                 current_expert_reward_Q
                 - current_expert_reward_V
-                + (current_expert_Q - expert_current_V)#.clip(args.cost_min, args.cost_max)
+                + (
+                    current_expert_Q - expert_current_V
+                ).clip(args.cost_min, args.cost_max)
             ).mean()
             if args.update_buffer:
-                w = w- (
-                    current_anti_reward_Q
-                    - current_anti_reward_V
-                    + (anti_Q - anti_current_V)#.clip(args.cost_min, args.cost_max)
-                ).clip(
-                    -args.anti_cof
-                ).mean()
+                neg_w = - (
+                        current_anti_reward_Q
+                        - current_anti_reward_V
+                        + (
+                            anti_Q - anti_current_V
+                        )  # .clip(args.cost_min, args.cost_max)
+                    ).clip(-args.anti_cof).mean()
+                w=w+neg_w
+                callback_log['neg_omega_qr']=jax.lax.stop_gradient((current_anti_reward_Q- current_anti_reward_V).mean())
+                callback_log['omega_qr']=jax.lax.stop_gradient((current_expert_reward_Q- current_expert_reward_V).mean())
+                callback_log['neg_omega_qc']=jax.lax.stop_gradient((anti_Q - anti_current_V).mean())
+                callback_log['omega_qc']=jax.lax.stop_gradient((current_expert_Q - expert_current_V).mean())
+                callback_log['neg_omega']=jax.lax.stop_gradient(neg_w.mean())
+                callback_log['omega']=jax.lax.stop_gradient(w.mean())
             coeff = args.l1_ratio
             loss = (
                 coeff * (-w)
                 + (1 - coeff) * (((anti_Q - 0) ** 2).mean())
                 # +10*current_Q.clip(0).mean()
-                 + args.reg_cof * (((current_expert_Q - expert_current_V) ** 2).mean())
+                + args.reg_cof * (((current_expert_Q - 0) ** 2).mean())
             )
 
             return loss, (current_V.mean(), current_Q.mean())
@@ -882,6 +829,237 @@ def train_step(agent_state, anti_buffer_state):
         key,
     )
     qf_state = soft_update(args.tau, qf_state)
+
+    return (
+        AgentState(
+            buffer_state,
+            actor_state,
+            vf_state,
+            qf_state,
+            reward_qf_state,
+            reward_vf_state,
+            key,
+        ),
+        callback_log,
+    )
+
+
+@checkify.checkify
+def cost_train_step(agent_state):
+    callback_log = {}
+
+    def update_reward_critic(
+        qf_state: RLTrainState,
+        vf_state: RLTrainState,
+        Expert_Batch: BatchData,
+        Policy_Batch: BatchData,
+        reward_qf_state: RLTrainState,
+        reward_vf_state: RLTrainState,
+        key: jax.random.KeyArray,
+    ):
+        key, subkey = jax.random.split(key, 2)
+        Batch = jax.tree_map(
+            lambda x, y: jnp.concatenate([x, y]), Policy_Batch, Expert_Batch
+        )
+        next_values = vf.apply(reward_vf_state.params, Batch.next_observations).reshape(
+            -1
+        )
+        current_reward_V = vf.apply(
+            reward_vf_state.params, Batch.observations * single_mask
+        ).reshape(-1)
+        current_V = vf.apply(vf_state.params, Batch.observations * single_mask).reshape(
+            -1
+        )
+        next_V = (1 - Batch.dones) * vf.apply(
+            vf_state.params, Batch.next_observations * single_mask
+        ).reshape(-1)
+        cost = -(
+            ((next_V - current_V).clip(args.cost_min, args.cost_max) < -1)
+            * 1.0
+        )
+        # cost=0.
+        def mse_loss(params):
+            current_reward_Q = qf.apply(
+                params, Batch.observations, Batch.actions
+            ).reshape(-1)
+            discounted_rewards = cost + args.gamma * (current_reward_V)
+            loss = ((current_reward_Q - discounted_rewards) ** 2).mean()
+            return loss, current_reward_Q.mean()
+
+        (reward_qf_loss_value, reward_qf_values), grads = jax.value_and_grad(
+            mse_loss, has_aux=True
+        )(reward_qf_state.params)
+        reward_qf_state = reward_qf_state.apply_gradients(grads=grads)
+        callback_log["reward_qf_loss_value"] = reward_qf_loss_value
+        callback_log["reward_qf_values"] = reward_qf_values
+        return reward_qf_state, key
+
+    def update_reward_value_critic(
+        Expert_Batch: BatchData,
+        Policy_Batch: BatchData,
+        reward_qf_state: RLTrainState,
+        reward_vf_state: RLTrainState,
+        key: jax.random.KeyArray,
+    ):
+        Batch = jax.tree_map(
+            lambda x, y: jnp.concatenate([x, y]), Policy_Batch, Expert_Batch
+        )
+        current_reward_Q = qf.apply(
+            reward_qf_state.target_params, Batch.observations, Batch.actions
+        ).reshape(-1)
+        lamb = args.lamb
+        current_Q = qf.apply(
+            qf_state.params, Batch.observations, Batch.actions
+        ).reshape(-1)
+        current_V = vf.apply(vf_state.params, Batch.observations * single_mask).reshape(
+            -1
+        )
+        next_V = (1 - Batch.dones) * vf.apply(
+            vf_state.params, Batch.next_observations * single_mask
+        ).reshape(-1)
+
+        def mse_loss(params):
+            current_reward_V = vf.apply(params, Batch.observations).reshape(-1)
+            next_reward_V = vf.apply(params, Batch.next_observations).reshape(-1)
+            y = current_reward_Q - next_reward_V
+
+            loss = (1 - lamb) * (next_reward_V).mean() + lamb * ((y).clip(0)).mean()
+            return loss, (next_reward_V.mean(), current_reward_Q.mean())
+
+        (
+            rewad_vf_loss_value,
+            (reward_vf_values, reward_qf_values),
+        ), grads = jax.value_and_grad(mse_loss, has_aux=True)(reward_vf_state.params)
+        reward_vf_state = reward_vf_state.apply_gradients(grads=grads)
+        callback_log["reward_vf_loss_value"] = rewad_vf_loss_value
+        callback_log["reward_vf_values"] = reward_vf_values
+        callback_log["reward_qf_values"] = reward_qf_values
+        return reward_vf_state, key
+
+    def update_actor(
+        actor_state: RLTrainState,
+        qf_state: RLTrainState,
+        vf_state: RLTrainState,
+        Policy_Batch: BatchData,
+        reward_qf_state: RLTrainState,
+        reward_vf_state: RLTrainState,
+        key: jax.random.KeyArray,
+    ):
+        Batch = jax.tree_map(
+            lambda x, y: jnp.concatenate([x, y]), Policy_Batch, Expert_Batch
+        )
+        current_reward_V = vf.apply(reward_vf_state.params, Batch.observations).reshape(
+            -1
+        )
+        current_reward_Q = qf.apply(
+            reward_qf_state.target_params, Batch.observations, Batch.actions
+        ).reshape(-1)
+
+        vf_pi = vf.apply(vf_state.params, Batch.observations * single_mask).reshape(-1)
+        next_vf_pi = (1 - Batch.dones) * vf.apply(
+            vf_state.params, Batch.next_observations * single_mask
+        ).reshape(-1)
+        qf_pi = qf.apply(qf_state.params, Batch.observations, Batch.actions).reshape(-1)
+        # Take min among all critics
+        min_qf_pi = jnp.min(qf_pi, axis=0).reshape(-1)
+        key, subkey = jax.random.split(key, 2)
+
+        def actor_loss(params):
+            mean, log_std = actor.apply(params, Batch.observations)
+            log_prob = action_log_prob(Batch.actions, mean, log_std)
+            y = (
+                current_reward_Q
+                - current_reward_V
+                - ((next_vf_pi - vf_pi).clip(args.cost_min, args.cost_max) < -0.1) * 100
+            )
+
+            callback_log["policy_td_mean"] = jax.lax.stop_gradient(
+                y[: len(Policy_Batch.observations)].mean()
+            )
+            callback_log["expert_td_mean"] = jax.lax.stop_gradient(
+                y[len(Policy_Batch.observations) :].mean()
+            )
+            callback_log["policy_log_std"] = jax.lax.stop_gradient(
+                log_std[: len(Policy_Batch.observations)].mean()
+            )
+            callback_log["expert_log_std"] = jax.lax.stop_gradient(
+                log_std[len(Policy_Batch.observations) :].mean()
+            )
+            w = omega_star(y)
+            actor_loss = -(
+                # w.clip(max=100.0).flatten() * log_prob
+                # w.flatten()
+                jnp.exp(y * 10.0).clip(max=100.0)
+                * log_prob
+            ).mean()
+            return actor_loss, -log_prob.mean()
+
+        (actor_loss_value, entropy), grads = jax.value_and_grad(
+            actor_loss, has_aux=True
+        )(actor_state.params)
+        actor_state = actor_state.apply_gradients(grads=grads)
+        callback_log["actor_loss_value"] = actor_loss_value
+        callback_log["entropy"] = entropy
+        return actor_state
+
+    (
+        buffer_state,
+        actor_state,
+        vf_state,
+        qf_state,
+        reward_qf_state,
+        reward_vf_state,
+        key,
+    ) = agent_state
+    sample_key, key = jax.random.split(key, 2)
+    observations, next_observations, actions, rewards, dones = buffer.sample_fn(
+        buffer_state, sample_key, args.batch_size
+    )
+    sample_key, key = jax.random.split(key, 2)
+    Policy_Batch = BatchData(
+        observations,
+        actions,
+        next_observations,
+        rewards,
+        dones,
+    )
+    expert_indice = jax.random.randint(
+        sample_key, minval=0, maxval=len(expert_obs), shape=(args.batch_size,)
+    )
+    Expert_Batch = BatchData(
+        expert_obs[expert_indice],
+        expert_action[expert_indice],
+        expert_next_obs[expert_indice],
+        expert_rewards[expert_indice],
+        expert_dones[expert_indice],
+    )
+    reward_qf_state, key = update_reward_critic(
+        qf_state,
+        vf_state,
+        Expert_Batch,
+        Policy_Batch,
+        reward_qf_state,
+        reward_vf_state,
+        key,
+    )
+    reward_vf_state, key = update_reward_value_critic(
+        Expert_Batch,
+        Policy_Batch,
+        reward_qf_state,
+        reward_vf_state,
+        key,
+    )
+    actor_state = update_actor(
+        actor_state,
+        qf_state,
+        vf_state,
+        Policy_Batch,
+        reward_qf_state,
+        reward_vf_state,
+        key,
+    )
+
+    reward_qf_state = soft_update(args.tau, reward_qf_state)
 
     return (
         AgentState(
@@ -1026,10 +1204,34 @@ if __name__ == "__main__":
 
     actor = Actor(action_dim=np.prod(envs.action_space.shape))
 
+    update_period = args.update_period
+    total_step = int((args.total_timesteps) / update_period)
+
+    if args.decay_schedule == "linear":
+        schedule_fn = optax.linear_onecycle_schedule(
+            int(args.total_timesteps), -args.policy_lr
+        )
+        actor_optimiser = optax.chain(
+            optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn)
+        )
+        schedule_fn = optax.linear_onecycle_schedule(
+            int(args.total_timesteps), -args.policy_lr
+        )
+        q_optimiser = optax.chain(
+            optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn)
+        )
+        v_optimiser = optax.chain(
+            optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn)
+        )
+    else:
+        actor_optimiser = optax.adam(learning_rate=args.policy_lr)
+        q_optimiser = optax.adam(learning_rate=args.q_lr)
+        v_optimiser = optax.adam(learning_rate=args.q_lr)
+
     actor_state = TrainState.create(
         apply_fn=actor.apply,
         params=actor.init(actor_key, obs),
-        tx=optax.adam(learning_rate=args.policy_lr),
+        tx=actor_optimiser,
     )
 
     reward_qf = VectorCritic(n_critics=args.n_critics)
@@ -1038,7 +1240,7 @@ if __name__ == "__main__":
         apply_fn=reward_qf.apply,
         params=reward_qf.init({"params": qf_key}, obs, action),
         target_params=reward_qf.init({"params": qf_key}, obs, action),
-        tx=optax.adam(learning_rate=args.q_lr),
+        tx=q_optimiser,
     )
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
@@ -1060,13 +1262,12 @@ if __name__ == "__main__":
         expert_dones,
     ) = split_data(expert_data)
 
-
     vf = ValueCritic()
     vf.apply = jax.jit(vf.apply)
     vf_state = TrainState.create(
         apply_fn=vf.apply,
         params=vf.init(actor_key, obs),
-        tx=optax.adam(learning_rate=args.policy_lr),
+        tx=v_optimiser,
     )
 
     qf = VectorCritic(n_critics=1)
@@ -1075,7 +1276,7 @@ if __name__ == "__main__":
         apply_fn=qf.apply,
         params=qf.init({"params": qf_key}, obs, action),
         target_params=qf.init({"params": qf_key}, obs, action),
-        tx=optax.adam(learning_rate=args.q_lr),
+        tx=q_optimiser,
     )
 
     qf = VectorCritic(n_critics=1)
@@ -1084,11 +1285,22 @@ if __name__ == "__main__":
         apply_fn=qf.apply,
         params=qf.init({"params": qf_key}, obs, action),
         target_params=qf.init({"params": qf_key}, obs, action),
-        tx=optax.adam(learning_rate=args.q_lr),
+        tx=q_optimiser,
     )
 
     reward_vf = ValueCritic()
     reward_vf_state = TrainState.create(
+        apply_fn=vf.apply,
+        params=vf.init(actor_key, obs),
+        tx=v_optimiser,
+    )
+    cost_qf_state = RLTrainState.create(
+        apply_fn=qf.apply,
+        params=qf.init({"params": qf_key}, obs, action),
+        target_params=qf.init({"params": qf_key}, obs, action),
+        tx=optax.adam(learning_rate=args.q_lr),
+    )
+    cost_vf_state = TrainState.create(
         apply_fn=vf.apply,
         params=vf.init(actor_key, obs),
         tx=optax.adam(learning_rate=args.policy_lr),
@@ -1169,17 +1381,18 @@ if __name__ == "__main__":
         buffer_state=buffer.add_batch_fn(
             agentstate.buffer_state,
             (
-                dataset["observations"][..., : obs.shape[-1]],
-                dataset["next_observations"][..., : obs.shape[-1]],
-                dataset["actions"],
-                dataset["rewards"],
-                dataset["terminals"] * (1 - dataset["timeouts"]),
+                dataset["observations"][..., : obs.shape[-1]].astype(jnp.float32),
+                dataset["next_observations"][..., : obs.shape[-1]].astype(jnp.float32),
+                dataset["actions"].astype(jnp.float32),
+                dataset["rewards"].astype(jnp.float32),
+                (dataset["terminals"] * (1 - dataset["timeouts"])).astype(jnp.bool_),
             ),
         )
     )
 
     _train_step = jax.jit(train_step)
     _reward_train_step = jax.jit(reward_train_step)
+    _cost_train_step = jax.jit(cost_train_step)
     # _max_reward_train_step= jax.jit(max_reward_train_step)
     # agentstate = agentstate._replace(
     #     buffer_state=buffer.add_batch_fn(
@@ -1196,6 +1409,11 @@ if __name__ == "__main__":
     def reward_train_step_body(carry, step):
         agentstate = carry
         _, (agentstate, callback_log) = _reward_train_step(agentstate)
+        return agentstate, callback_log
+
+    def cost_train_step_body(carry, step):
+        agentstate = carry
+        _, (agentstate, callback_log) = _cost_train_step(agentstate)
         return agentstate, callback_log
 
     agentstate, reward_callback_log = jax.lax.scan(
@@ -1237,13 +1455,35 @@ if __name__ == "__main__":
         action_diff_log,
         action_diff,
     ) = update_anti_actions(anti_buffer_state, agentstate.actor_state)
-    update_period=args.update_period
-    total_step = int((args.total_timesteps) / update_period)
     reward_gap = float("inf")
+    # total_obs = dataset["observations"][..., : obs.shape[-1]].astype(jnp.float32)
+    # total_action = dataset["actions"].astype(jnp.float32)
+    # total_infos = dataset['infos']['x_velocity'][1:]
     for global_step in range(total_step):
-        if global_step % (25000//update_period) == 0:
-            eval_policy(envs, agentstate, global_step*args.update_period)
-        # if global_step % 100 == 0:
+        if global_step % (25000 // update_period) == 0:
+            eval_policy(envs, agentstate, global_step * args.update_period)
+            # new_agentstate, reward_callback_log = jax.lax.scan(
+            # cost_train_step_body,
+            # (
+            #     AgentState(
+            #         agentstate.buffer_state,
+            #         agentstate.actor_state,
+            #         agentstate.vf_state,
+            #         agentstate.qf_state,
+            #         cost_qf_state,
+            #         cost_vf_state,
+            #         key,
+            #     )
+            # ),
+            # (),
+            # length=10000,
+            # )
+            # plot_vf_state(
+            #     new_agentstate.reward_vf_state, total_obs, total_infos
+            # )
+            # wandb.log({"cost_plot": wandb.Image(plt)})
+            # plt.close()
+        # if global_step % (25000 // update_period) == 0:
         #     state = {
         #         "qf_state": agentstate.qf_state,
         #         "vf_state": agentstate.vf_state,
@@ -1253,19 +1493,18 @@ if __name__ == "__main__":
         #     }
         #     save_args = orbax_utils.save_args_from_target(state)
         #     checkpointer.save(f"debugpolicy/{args.env_id}/{run_name}_{global_step}", state, save_args=save_args)
-        # if global_step%2000==0:
-        #     agentstate=agentstate._replace(    qf_state = RLTrainState.create(
-        #             apply_fn=qf.apply,
-        #             params=qf.init({"params": qf_key}, obs, action),
-        #             target_params=qf.init({"params": qf_key}, obs, action),
-        #             tx=optax.adam(learning_rate=args.q_lr),
-        #                 ),
-        #                 vf_state = TrainState.create(
-        #         apply_fn=vf.apply,
-        #         params=vf.init(actor_key, obs),
-        #         tx=optax.adam(learning_rate=args.policy_lr),
-        #     )
-        #     )
+            # agentstate=agentstate._replace(    qf_state = RLTrainState.create(
+            #         apply_fn=qf.apply,
+            #         params=qf.init({"params": qf_key}, obs, action),
+            #         target_params=qf.init({"params": qf_key}, obs, action),
+            #         tx=optax.adam(learning_rate=args.q_lr),
+            #             ),
+            #             vf_state = TrainState.create(
+            #     apply_fn=vf.apply,
+            #     params=vf.init(actor_key, obs),
+            #     tx=optax.adam(learning_rate=args.policy_lr),
+            # )
+            # )
         log_data = {}
         if args.update_V:
             if (not args.stable_update) or reward_gap < 0.1:
@@ -1284,7 +1523,7 @@ if __name__ == "__main__":
             (),
             length=update_period,
         )
-        if global_step % (2500//update_period) == 0:
+        if global_step % (2500 // update_period) == 0:
             if args.update_buffer:
                 (
                     anti_buffer_state,
@@ -1294,14 +1533,14 @@ if __name__ == "__main__":
                 ) = update_anti_actions(anti_buffer_state, agentstate.actor_state)
 
         log_data = log_data | jax.tree_map(jnp.mean, reward_callback_log)
-        reward_gap = jnp.abs(
-            reward_callback_log["reward_vf_loss_value"].mean()
-            - old_reward_vf_loss_value
-        )
+        
+
         old_reward_vf_loss_value = reward_callback_log["reward_vf_loss_value"].mean()
-        if global_step % (1000//update_period) == 0:
+        if global_step % (1000 // update_period) == 0:
             log_data = log_data | {
-                "charts/SPS": int((global_step*args.update_period) / (time.time() - start_time)),
+                "charts/SPS": int(
+                    (global_step * args.update_period) / (time.time() - start_time)
+                ),
                 "charts/expert_log_prob": get_log_prob(
                     agentstate.actor_state.params, expert_action, expert_obs
                 ),
@@ -1312,22 +1551,22 @@ if __name__ == "__main__":
             for k, v in log_data.items():
                 print(k, v, global_step)
             if args.track:
-                wandb.log({"global_step": global_step*args.update_period, **log_data})
+                wandb.log({"global_step": global_step * args.update_period, **log_data})
 
     if args.track:
         total_obs, _, total_action, _, _ = buffer.sample_fn(
             agentstate.buffer_state, key, 20000
         )
-        plt.close()
-        plot_state_whole(
-            agentstate.vf_state, agentstate.qf_state, total_obs, total_action
-        )
-        wandb.log({"cost_plot": wandb.Image(plt)})
-        plt.close()
+        # plt.close()
+        # plot_state_whole(
+        #     agentstate.vf_state, agentstate.qf_state, total_obs, total_action
+        # )
+        # wandb.log({"cost_plot": wandb.Image(plt)})
+        # plt.close()
         # plot_vf_state_whole(agentstate.vf_state, total_obs)
         # wandb.log({"v_plot": wandb.Image(plt)})
         # plt.close()
-    eval_policy(envs, agentstate, total_step*args.update_period, 100)
+    eval_policy(envs, agentstate, total_step * args.update_period, 100)
     state = {
         "qf_state": agentstate.qf_state,
         "vf_state": agentstate.vf_state,
