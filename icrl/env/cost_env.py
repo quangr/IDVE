@@ -5,6 +5,7 @@ import os
 import importlib.util
 import gymnasium as gym
 from icrl.common.venv_wrappers import VectorEnvWrapper
+from icrl.common.DummyVecEnv import DummyVecEnv
 
 @flax.struct.dataclass
 class EpisodeStatistics:
@@ -48,7 +49,7 @@ def load_cost_function(env_id):
     # If the envs_id does not match any module, raise an error
     raise ValueError(f"No module found for envs_id '{env_id}' in the 'envs' directory.")
 
-def make_cost_env(env_id,num_envs,seed,get_wrappers):    
+def make_cost_env(env_id,num_envs,seed,get_wrappers,get_module=False):    
     try:
         module = load_cost_function(env_id)
         cost_function=module.cost_function
@@ -82,7 +83,10 @@ def make_cost_env(env_id,num_envs,seed,get_wrappers):
     envs = VectorEnvWrapper(envs, wrappers)
 
     handle, recv, send, step_env = envs.xla()
-    return envs, handle, step_env, episode_stats,cost_function
+    if get_module:
+        return envs, handle, step_env, episode_stats,cost_function,module
+    else:
+        return envs, handle, step_env, episode_stats,cost_function
 
 def make_cost_env_no_xla(env_id,num_envs,seed,get_module=False):    
     try:
@@ -91,11 +95,11 @@ def make_cost_env_no_xla(env_id,num_envs,seed,get_module=False):
         env_id=module.env_id
         # Now you can use the cost_function
         # For example: result = cost_function(some_arguments)
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Not a custom env, assigning cost function 0")
         def cost_function(next_obs, reward, next_done, next_truncated, info):
             return jnp.zeros_like(reward)
+
     try:
         envs = envpool.make(
             env_id,
@@ -104,7 +108,7 @@ def make_cost_env_no_xla(env_id,num_envs,seed,get_module=False):
             seed=seed,
         )
     except Exception:
-        exit("quit")
+        envs = DummyVecEnv([lambda : gym.make(env_id) for i in range(num_envs)])    
     if get_module:
         return envs, cost_function,module
     else:

@@ -13,7 +13,7 @@ def cost_function(next_obs, reward, next_done, next_truncated, info):
         return jnp.abs(next_obs[:,5])+jnp.abs(next_obs[:,6])+jnp.abs(next_obs[:,7])
 
 single_mask = np.ones(17)
-single_mask[8:] = 0
+# single_mask[8:] = 0
 # single_mask = np.zeros(17)
 # single_mask[5:8] = 1
 

@@ -752,8 +752,12 @@ def train_step(agent_state, anti_buffer_state):
                 w=w+neg_w
                 callback_log['neg_omega_qr']=jax.lax.stop_gradient((current_anti_reward_Q- current_anti_reward_V).mean())
                 callback_log['omega_qr']=jax.lax.stop_gradient((current_expert_reward_Q- current_expert_reward_V).mean())
+                callback_log['neg_omega_vr']=jax.lax.stop_gradient((current_anti_reward_V).mean())
+                callback_log['omega_vr']=jax.lax.stop_gradient((current_expert_reward_V).mean())
                 callback_log['neg_omega_qc']=jax.lax.stop_gradient((anti_Q - anti_current_V).mean())
                 callback_log['omega_qc']=jax.lax.stop_gradient((current_expert_Q - expert_current_V).mean())
+                callback_log['neg_omega_vc']=jax.lax.stop_gradient((anti_current_V).mean())
+                callback_log['omega_vc']=jax.lax.stop_gradient((expert_current_V).mean())
                 callback_log['neg_omega']=jax.lax.stop_gradient(neg_w.mean())
                 callback_log['omega']=jax.lax.stop_gradient(w.mean())
             coeff = args.l1_ratio
