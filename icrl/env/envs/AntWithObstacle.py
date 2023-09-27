@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import jax
 import numpy as np
 import gym as ogym
-import d4rl
+
 import flax
 import jax.numpy as jnp
 from flax.training import orbax_utils
@@ -29,7 +29,7 @@ def cost_function(next_obs, reward, next_done, next_truncated, info):
 
 def offline_dataset():
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()    
-    data=checkpointer.restore("/home/guorui/jax-rl/tmp/buffer/Ant_abs/Ant_abs__new_sac__1__1695619618/")
+    data=checkpointer.restore("tmp/buffer/Ant_abs/Ant_abs__new_sac__1__1695619618/")
     dataset={}
     dataset["observations"]=data[0][:100000,0]
     dataset["next_observations"]=data[1][:100000,0]

@@ -5,7 +5,6 @@ import os
 import importlib.util
 import gymnasium as gym
 from icrl.common.venv_wrappers import VectorEnvWrapper
-from icrl.common.DummyVecEnv import DummyVecEnv
 
 @flax.struct.dataclass
 class EpisodeStatistics:
@@ -107,8 +106,9 @@ def make_cost_env_no_xla(env_id,num_envs,seed,get_module=False):
             num_envs=num_envs,
             seed=seed,
         )
-    except Exception:
-        envs = DummyVecEnv([lambda : gym.make(env_id) for i in range(num_envs)])    
+    except Exception as e:
+        print(e)
+        exit("no")
     if get_module:
         return envs, cost_function,module
     else:
