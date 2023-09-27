@@ -91,7 +91,7 @@ def parse_args():
         help="the discount factor gamma")
     parser.add_argument("--tau", type=float, default=0.005,
         help="target smoothing coefficient (default: 0.005)")
-    parser.add_argument("--batch-size", type=int, default=256,
+    parser.add_argument("--batch-size", type=int, default=128,
         help="the batch size of sample from the reply memory")
     parser.add_argument("--policy-lr", type=float, default=3e-4,
         help="the learning rate of the policy network optimizer")
@@ -113,6 +113,7 @@ def parse_args():
         help="entropy regularization coefficient")
     parser.add_argument("--reg-cof", type=float, default=0.05,
         help="entropy regularization coefficient")
+    parser.add_argument('--debug', type=lambda x:bool(strtobool(x)), default=True, nargs="?", const=False,)
     parser.add_argument('--mean-V-update', type=lambda x:bool(strtobool(x)), default=False, nargs="?", const=False,)
     parser.add_argument('--update-buffer', type=lambda x:bool(strtobool(x)), default=True, nargs="?", const=False,)
     parser.add_argument('--update-V', type=lambda x:bool(strtobool(x)), default=True, nargs="?", const=False,)
@@ -412,8 +413,9 @@ def reward_train_step(agent_state):
             mse_loss, has_aux=True
         )(reward_qf_state.params)
         reward_qf_state = reward_qf_state.apply_gradients(grads=grads)
-        callback_log["reward_qf_loss_value"] = reward_qf_loss_value
-        callback_log["reward_qf_values"] = reward_qf_values
+        if args.debug:
+            callback_log["reward_qf_loss_value"] = reward_qf_loss_value
+            callback_log["reward_qf_values"] = reward_qf_values
         return reward_qf_state, key
 
     def update_reward_value_critic(
@@ -474,11 +476,12 @@ def reward_train_step(agent_state):
             ),
         ), grads = jax.value_and_grad(mse_loss, has_aux=True)(reward_vf_state.params)
         reward_vf_state = reward_vf_state.apply_gradients(grads=grads)
-        callback_log["reward_vf_loss_value"] = rewad_vf_loss_value
-        callback_log["policy_reward_vf_values"] = policy_reward_vf_values
-        callback_log["expert_reward_vf_values"] = expert_reward_vf_values
-        callback_log["policy_reward_qf_values"] = policy_reward_qf_values
-        callback_log["expert_reward_qf_values"] = expert_reward_qf_values
+        if args.debug:
+            callback_log["reward_vf_loss_value"] = rewad_vf_loss_value
+            callback_log["policy_reward_vf_values"] = policy_reward_vf_values
+            callback_log["expert_reward_vf_values"] = expert_reward_vf_values
+            callback_log["policy_reward_qf_values"] = policy_reward_qf_values
+            callback_log["expert_reward_qf_values"] = expert_reward_qf_values
         return reward_vf_state, key
 
     def update_actor(
@@ -525,18 +528,19 @@ def reward_train_step(agent_state):
                     + (next_vf_pi - vf_pi).clip(args.cost_min, args.cost_max)
                 )
 
-            callback_log["policy_td_mean"] = jax.lax.stop_gradient(
-                y[: len(Policy_Batch.observations)].mean()
-            )
-            callback_log["expert_td_mean"] = jax.lax.stop_gradient(
-                y[len(Policy_Batch.observations) :].mean()
-            )
-            callback_log["policy_log_std"] = jax.lax.stop_gradient(
-                log_std[: len(Policy_Batch.observations)].mean()
-            )
-            callback_log["expert_log_std"] = jax.lax.stop_gradient(
-                log_std[len(Policy_Batch.observations) :].mean()
-            )
+            if args.debug:
+                callback_log["policy_td_mean"] = jax.lax.stop_gradient(
+                    y[: len(Policy_Batch.observations)].mean()
+                )
+                callback_log["expert_td_mean"] = jax.lax.stop_gradient(
+                    y[len(Policy_Batch.observations) :].mean()
+                )
+                callback_log["policy_log_std"] = jax.lax.stop_gradient(
+                    log_std[: len(Policy_Batch.observations)].mean()
+                )
+                callback_log["expert_log_std"] = jax.lax.stop_gradient(
+                    log_std[len(Policy_Batch.observations) :].mean()
+                )
             w = omega_star(y)
             actor_loss = -(
                 # w.clip(max=100.0).flatten() * log_prob
@@ -750,16 +754,17 @@ def train_step(agent_state, anti_buffer_state):
                         )  # .clip(args.cost_min, args.cost_max)
                     ).clip(-args.anti_cof).mean()
                 w=w+neg_w
-                callback_log['neg_omega_qr']=jax.lax.stop_gradient((current_anti_reward_Q- current_anti_reward_V).mean())
-                callback_log['omega_qr']=jax.lax.stop_gradient((current_expert_reward_Q- current_expert_reward_V).mean())
-                callback_log['neg_omega_vr']=jax.lax.stop_gradient((current_anti_reward_V).mean())
-                callback_log['omega_vr']=jax.lax.stop_gradient((current_expert_reward_V).mean())
-                callback_log['neg_omega_qc']=jax.lax.stop_gradient((anti_Q - anti_current_V).mean())
-                callback_log['omega_qc']=jax.lax.stop_gradient((current_expert_Q - expert_current_V).mean())
-                callback_log['neg_omega_vc']=jax.lax.stop_gradient((anti_current_V).mean())
-                callback_log['omega_vc']=jax.lax.stop_gradient((expert_current_V).mean())
-                callback_log['neg_omega']=jax.lax.stop_gradient(neg_w.mean())
-                callback_log['omega']=jax.lax.stop_gradient(w.mean())
+                if args.debug:
+                    callback_log['neg_omega_qr']=jax.lax.stop_gradient((current_anti_reward_Q- current_anti_reward_V).mean())
+                    callback_log['omega_qr']=jax.lax.stop_gradient((current_expert_reward_Q- current_expert_reward_V).mean())
+                    callback_log['neg_omega_vr']=jax.lax.stop_gradient((current_anti_reward_V).mean())
+                    callback_log['omega_vr']=jax.lax.stop_gradient((current_expert_reward_V).mean())
+                    callback_log['neg_omega_qc']=jax.lax.stop_gradient((anti_Q - anti_current_V).mean())
+                    callback_log['omega_qc']=jax.lax.stop_gradient((current_expert_Q - expert_current_V).mean())
+                    callback_log['neg_omega_vc']=jax.lax.stop_gradient((anti_current_V).mean())
+                    callback_log['omega_vc']=jax.lax.stop_gradient((expert_current_V).mean())
+                    callback_log['neg_omega']=jax.lax.stop_gradient(neg_w.mean())
+                    callback_log['omega']=jax.lax.stop_gradient(w.mean())
             coeff = args.l1_ratio
             loss = (
                 coeff * (-w)
@@ -774,9 +779,10 @@ def train_step(agent_state, anti_buffer_state):
             mse_loss, has_aux=True
         )(qf_state.params)
         qf_state = qf_state.apply_gradients(grads=grads)
-        callback_log["qf_loss_value"] = qf_loss_value
-        callback_log["qf_values"] = qf_values
-        callback_log["vf_values"] = vf_values
+        if args.debug:
+            callback_log["qf_loss_value"] = qf_loss_value
+            callback_log["qf_values"] = qf_values
+            callback_log["vf_values"] = vf_values
 
         return qf_state, key
 
@@ -894,8 +900,9 @@ def cost_train_step(agent_state):
             mse_loss, has_aux=True
         )(reward_qf_state.params)
         reward_qf_state = reward_qf_state.apply_gradients(grads=grads)
-        callback_log["reward_qf_loss_value"] = reward_qf_loss_value
-        callback_log["reward_qf_values"] = reward_qf_values
+        if args.debug:
+            callback_log["reward_qf_loss_value"] = reward_qf_loss_value
+            callback_log["reward_qf_values"] = reward_qf_values
         return reward_qf_state, key
 
     def update_reward_value_critic(
@@ -977,18 +984,19 @@ def cost_train_step(agent_state):
                 - ((next_vf_pi - vf_pi).clip(args.cost_min, args.cost_max) < -0.1) * 100
             )
 
-            callback_log["policy_td_mean"] = jax.lax.stop_gradient(
-                y[: len(Policy_Batch.observations)].mean()
-            )
-            callback_log["expert_td_mean"] = jax.lax.stop_gradient(
-                y[len(Policy_Batch.observations) :].mean()
-            )
-            callback_log["policy_log_std"] = jax.lax.stop_gradient(
-                log_std[: len(Policy_Batch.observations)].mean()
-            )
-            callback_log["expert_log_std"] = jax.lax.stop_gradient(
-                log_std[len(Policy_Batch.observations) :].mean()
-            )
+            if args.debug:
+                callback_log["policy_td_mean"] = jax.lax.stop_gradient(
+                    y[: len(Policy_Batch.observations)].mean()
+                )
+                callback_log["expert_td_mean"] = jax.lax.stop_gradient(
+                    y[len(Policy_Batch.observations) :].mean()
+                )
+                callback_log["policy_log_std"] = jax.lax.stop_gradient(
+                    log_std[: len(Policy_Batch.observations)].mean()
+                )
+                callback_log["expert_log_std"] = jax.lax.stop_gradient(
+                    log_std[len(Policy_Batch.observations) :].mean()
+                )
             w = omega_star(y)
             actor_loss = -(
                 # w.clip(max=100.0).flatten() * log_prob
@@ -1426,7 +1434,6 @@ if __name__ == "__main__":
         (),
         length=10000,
     )
-    old_reward_vf_loss_value = reward_callback_log["reward_vf_loss_value"].mean()
 
     # @partial(jax.jit, donate_argnums=(0))
     # def update_anti_actions(anti_buffer_state,actor_state):
@@ -1539,7 +1546,6 @@ if __name__ == "__main__":
         log_data = log_data | jax.tree_map(jnp.mean, reward_callback_log)
         
 
-        old_reward_vf_loss_value = reward_callback_log["reward_vf_loss_value"].mean()
         if global_step % (1000 // update_period) == 0:
             log_data = log_data | {
                 "charts/SPS": int(
