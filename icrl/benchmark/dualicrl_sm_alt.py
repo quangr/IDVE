@@ -691,6 +691,15 @@ def train_step(agent_state, antibuffer):
             lambda x, y: jnp.concatenate([x, y]), Policy_Batch, Expert_Batch
         )
 
+        current_reward_V = vf.apply(
+            reward_vf_state.params, Batch.observations
+        ).reshape(-1)
+        current_reward_Q = qf.apply(
+            reward_qf_state.params,
+            Batch.observations,
+            Batch.actions,
+        ).reshape(-1)
+
         current_expert_reward_V = vf.apply(
             reward_vf_state.params, Expert_Batch.observations
         ).reshape(-1)
@@ -768,7 +777,7 @@ def train_step(agent_state, antibuffer):
             coeff = args.l1_ratio
             loss = (
                 coeff * (-w)
-                + (1 - coeff) * (((anti_Q - 0) ** 2).mean())
+                + (1 - coeff) * (((anti_Q - 0) ** 2).mean()+((((current_reward_Q-current_reward_V)<0)*(current_Q - 0) ** 2)).mean())
                 # +10*current_Q.clip(0).mean()
                 + args.reg_cof * (((current_expert_Q - 0) ** 2).mean())
             )
