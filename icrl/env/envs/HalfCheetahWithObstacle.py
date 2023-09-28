@@ -2,15 +2,13 @@ import jax.numpy as jnp
 import jax
 import numpy as np
 import gym as ogym
-
 import flax
-env_id="Reacher-v4"
 import jax.numpy as jnp
 from flax.training import orbax_utils
 import orbax.checkpoint
 
 from icrl.common.venv_wrappers import EnvWrapper
-env_id="HalfCheetah-v3"
+env_id="HalfCheetah-v4"
 @flax.struct.dataclass
 class RewardWrapper(EnvWrapper):
     def recv(self,ret) :
@@ -27,11 +25,7 @@ def reward_function(next_obs, reward, next_done, next_truncated, info):
 def cost_function(next_obs, reward, next_done, next_truncated, info):
     return info['x_position']<-3
 
-
-# def offline_dataset():
-#     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-#     dataset=checkpointer.restore("offlinedata/HalfCheetahWithObstacle")
-#     return dataset
+single_mask = np.ones(17)
 def offline_dataset():
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     

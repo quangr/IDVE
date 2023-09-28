@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import jax
 import numpy as np
 import gym as ogym
-
+import d4rl
 from flax.training import orbax_utils
 import orbax.checkpoint
 env_id="Ant-v4"
