@@ -29,7 +29,7 @@ def cost_function(next_obs, reward, next_done, next_truncated, info):
 
 def offline_dataset():
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()    
-    data=checkpointer.restore("tmp/buffer/AntWithObstacle/AntWithObstacle__new_sac__1__1695815886/")
+    data=checkpointer.restore("tmp/buffer/AntWithObstacle/AntWithObstacle__new_sac__1__1695911869/")
     dataset={}
     dataset["observations"]=data[0][:100000,0]
     dataset["next_observations"]=data[1][:100000,0]
