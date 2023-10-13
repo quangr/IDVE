@@ -21,14 +21,14 @@ def parse_args():
         help="the name of this experiment")
     parser.add_argument("--seed", type=int, default=1,
         help="seed of the experiment")
-    parser.add_argument("--expert-size", type=int, default=50,
+    parser.add_argument("--expert-size", type=int, default=100,
         help="seed of the experiment")
-    parser.add_argument("--lamb", type=float, default=0.4)
-    parser.add_argument("--ad-min", type=float, default=float("-inf"))
+    parser.add_argument("--lamb", type=float, default=0.3)
+    parser.add_argument("--ad-min", type=float, default=1)
     
     parser.add_argument("--track", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
         help="if toggled, this experiment will be tracked with Weights and Biases")
-    parser.add_argument("--setting", type=str, default="setting2",
+    parser.add_argument("--setting", type=str, default="setting3",
         help="the wandb's project name")
     args = parser.parse_args()
     return args
@@ -472,27 +472,10 @@ if __name__ == "__main__":
 
 
             reward_V = jnp.zeros(grid_shape)
-            for i in range(50000):
+            for i in range(60000):
                 reward_V, reward_opt_state, loss_value = reward_step(
                     V, reward_V, reward_opt_state
                 )
-            old_reward_V=reward_V
-            for epoch in range(1):
-                reward_opt_state = optimizer.init(reward_V)
-                # saveimg(reward_V,f"grid_img/test/reward_V/{epoch}.jpg")
-                # saveimg(reward_V+V,f"grid_img/test/total_V/{epoch}.jpg")
-                V = jnp.zeros(grid_shape)
-                for i in range(10000):
-                    reward_V, reward_opt_state, loss_value = reward_step(
-                        V, reward_V, reward_opt_state
-                    )
-
-                print(
-                    f"epoch: {epoch}, loss: {loss_value},reward_V_delta: {((old_reward_V-reward_V)**2).sum()}"
-                )               
-                old_reward_V=reward_V
-
-
             return reward_V
 
 
@@ -552,26 +535,42 @@ if __name__ == "__main__":
     ad_min= args.ad_min
     costs=[]
     lengths=[]
+    transfer_costs=[]
+    transfer_lengths=[]
     Vs=[]
     for i in range(5):
-        expert_indice = np.random.permutation((np.array(list(map(len,expert_trajs)))-1).sum())[:args.expert_size]
+        total_length=(np.array(list(map(len,expert_trajs)))-1).sum()
+        expert_indice = np.random.permutation(total_length)[:int(total_length*args.expert_size/100)]
         reward_V,V=solve_V(grid_shape, expert_trajs, end_point, sample_trajs, gamma, beta,lamb,ad_min,expert_indice)
-        new_end_point=ab_points[-1]
-        new_reward_V=resolve_V(grid_shape, expert_trajs, new_end_point, sample_trajs, gamma, beta,V,expert_indice)
-        cum_cost,cum_length=get_traj(V, new_end_point, new_reward_V)
-        alter_start = list(map(tuple,config['alter_start_states']))
+        cum_cost,cum_length=get_traj(V, ab_points[0], reward_V)
+        start_states = list(map(tuple,config['start_states']))
+        d_start = np.zeros(grid_shape,dtype=bool)
+        for point in start_states:
+            d_start[point] = True
+        costs.append(cum_cost[d_start].mean())
+        lengths.append(cum_length[d_start].mean())
 
+
+        new_end_point=ab_points[-1]
+        _V=-(V<-0.1).astype(jnp.int32)*1000
+        new_reward_V=resolve_V(grid_shape, expert_trajs, new_end_point, sample_trajs, gamma, beta,_V,expert_indice)
+        cum_cost,cum_length=get_traj(_V, new_end_point, new_reward_V)
+        alter_start = list(map(tuple,config['alter_start_states']))
         d_start = np.zeros(grid_shape,dtype=bool)
         for point in alter_start:
             d_start[point] = True
         Vs.append((reward_V,V,new_reward_V))
-        costs.append(cum_cost[d_start].mean())
-        lengths.append(cum_length[d_start].mean())
+        transfer_costs.append(cum_cost[d_start].mean())
+        transfer_lengths.append(cum_length[d_start].mean())
     if args.track:
         wandb.run.summary["mean_cost"]=np.array(costs).mean()
-        wandb.run.summary["violate rate"]=np.array(costs>0).mean()
+        wandb.run.summary["violate_rate"]=(np.array(costs)>0).mean()
         wandb.run.summary["mean_length"]=np.array(lengths).mean()
-        wandb.run.summary["successful rate"]=1-np.isnan(np.array(lengths)).mean()
+        wandb.run.summary["successful_rate"]=1-np.isnan(np.array(lengths)).mean()
+        wandb.run.summary["transfer_mean_cost"]=np.array(transfer_costs).mean()
+        wandb.run.summary["transfer_violate_rate"]=(np.array(transfer_costs)>0).mean()
+        wandb.run.summary["transfer_mean_length"]=np.array(transfer_lengths).mean()
+        wandb.run.summary["transfer_successful_rate"]=1-np.isnan(np.array(transfer_lengths)).mean()
         checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         save_args = orbax_utils.save_args_from_target(Vs)
         checkpointer.save(f"grid_img/paper/wandb/{run_name}",Vs, save_args=save_args)
