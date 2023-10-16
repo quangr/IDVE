@@ -2,3 +2,5 @@
 expert_data
 tmp
 wandb
+sacpolicy
+debugpolicy
