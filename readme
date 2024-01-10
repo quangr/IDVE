@@ -5,6 +5,7 @@ you may run
 pip install envpool flax  
 pip install git+https://github.com/quangr/dejax.git
 pip install stable_baselines3 --no-dependencies
+pip install gymnasium-robotics
 pip install -U "jax[cuda]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 pip install -e .
 pip install wandb tensorboard
