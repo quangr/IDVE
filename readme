@@ -1,5 +1,9 @@
 discrete rl: https://github.com/quangr/IDVE/blob/main/icrl/offline_rl/transfer_reward_batch.py
 
+continuous maze: https://github.com/quangr/IDVE/blob/main/icrl/maze/maze_test.py
+
+maze-data:https://drive.google.com/file/d/1ZT0t5YrF1GGx0bXNt79aSSCInBODs4Ii/view?usp=sharing
+
 you may run
 ```
 pip install envpool flax  
